@@ -1,0 +1,201 @@
+#!/bin/bash
+clear
+LOCK_FILE="/etc/user_locks.db"
+XRAY_CONFIG="/etc/xray/config.json"
+BACKUP_DIR="/etc/xray/backups"
+domainku=$(cat /etc/xray/domain)
+ISP=$(cat /etc/xray/isp)
+#responden=$(curl -s "http://ip-api.com/json/?fields=country,region,city,timezone,isp")
+#ISPKU=$(echo "$responden" | jq -r '.isp')
+mkdir -p /etc/xray/backups
+mkdir -p /etc/shadowsocks/
+mkdir -p /etc/limit/shadowsocks/ip/
+
+TIME_WINDOW_MINUTES=2
+LIVENESS_THRESHOLD_SECONDS=60
+FULL_LOG_FILE="/var/log/xray/access.log"
+FILTERED_LOG_FILE="/tmp/xray_filtered_temp.log"
+
+function send-ip() {
+    CHATID=$(grep -E "^#bot# " "/etc/bot/.bot.db" | cut -d ' ' -f 3)
+    KEY=$(grep -E "^#bot# " "/etc/bot/.bot.db" | cut -d ' ' -f 2)
+    TIME="10"
+    URL="https://api.telegram.org/bot$KEY/sendMessage"
+    TEXT="
+<code>────────────────────</code>
+<b>⚠️ INGFO-INGFO MASEEE ⚠️</b>
+<code>────────────────────</code>
+<b>» ISP:</b> <code>${ISP}</code>
+<b>» Domain:</b> <code>${domainku}</code>
+<b>» Protocol:</b> <code>shadowsocks</code>
+<b>» User:</b> <code>${user}</code>
+<b>» Limit IP:</b> <code>${limit_ip} IP</code>
+<b>» IP Login:</b> <code>${login_count} IP</code>
+<b>» Status:</b> <code>User telah dikunci</code>
+<b>» Durasi Penguncian 15 Menit</b>
+<code>────────────────────</code>
+<b>🤖 » Akun Beliau Sudah Di Kunci Karena Nakal</b>
+<code>────────────────────</code>
+"
+    curl -s --max-time $TIME -d "chat_id=$CHATID&disable_web_page_preview=1&text=$TEXT&parse_mode=html" $URL >/dev/null
+}
+
+function send-unban-notif() {
+    CHATID=$(grep -E "^#bot# " "/etc/bot/.bot.db" | cut -d ' ' -f 3)
+    KEY=$(grep -E "^#bot# " "/etc/bot/.bot.db" | cut -d ' ' -f 2)
+    TIME="10"
+    URL="https://api.telegram.org/bot$KEY/sendMessage"
+    TEXT="
+<code>────────────────────</code>
+<b>✅ INGFO-INGFO MASEEE ✅</b>
+<code>────────────────────</code>
+<b>» ISP:</b> <code>${ISP}</code>
+<b>» Domain:</b> <code>${domainku}</code>
+<b>» Protocol:</b> <code>shadowsocks</code>
+<b>» User:</b> <code>${unlocked_user}</code>
+<b>» Status:</b> <code>Telah Bebas Dari Penguncian</code>
+<code>────────────────────</code>
+<b>🤖 » Akun Beliau Sudah Di Bebaskan</b>
+<code>────────────────────</code>
+"
+    curl -s --max-time $TIME -d "chat_id=$CHATID&disable_web_page_preview=1&text=$TEXT&parse_mode=html" $URL >/dev/null
+}
+
+reload_services() {
+    systemctl restart xray >/dev/null 2>&1
+}
+
+function modify_xray_config() {
+    local action="$1"
+    local user="$2"
+    local protocol="shadowsocks"
+    local marker="#@& $user"
+
+    if [[ $action == "lock" ]]; then
+        cp "$XRAY_CONFIG" "$BACKUP_DIR/config.json.bak"
+        sed -i "/^${marker}/,/^},{/d" "$XRAY_CONFIG"
+        echo -e "User '${user}' on protocol '${protocol}' has been locked."
+    elif [[ $action == "unlock" ]]; then
+        if [[ -f "$BACKUP_DIR/config.json.bak" ]]; then
+            cp "$BACKUP_DIR/config.json.bak" "$XRAY_CONFIG"
+            echo -e "User '${user}' on protocol '${protocol}' has been restored from the backup."
+        else
+            echo -e "Backup not found! Failed to unlock user '${user}'."
+        fi
+    fi
+}
+
+function lock_user() {
+    local user="$1"
+    if [[ -z "$user" ]]; then
+        echo -e "Username cannot be empty!"
+        return
+    fi
+
+    if grep -qw "shadowsocks:${user}" "$LOCK_FILE"; then
+        echo -e "User '${user}' on shadowsocks is already locked!"
+        return
+    fi
+
+    echo "shadowsocks:${user}:$(date +%s)" >> "$LOCK_FILE"
+    modify_xray_config "lock" "$user"
+    reload_services
+}
+
+function unlock_expired_users() {
+    local current_time=$(date +%s)
+    local temp_lock_file=$(mktemp)
+    local unlocked_count=0
+
+    while IFS= read -r line; do
+        local protocol=$(echo "$line" | cut -d ':' -f 1)
+        local user=$(echo "$line" | cut -d ':' -f 2)
+        local lock_timestamp=$(echo "$line" | cut -d ':' -f 3)
+
+        if [[ "$protocol" == "shadowsocks" && -n "$user" && -n "$lock_timestamp" ]]; then
+            local elapsed_time=$((current_time - lock_timestamp))
+
+            if [[ "$elapsed_time" -ge 900 ]]; then
+                echo "Attempting to unlock shadowsocks user: ${user} (locked for ${elapsed_time} seconds)"
+                modify_xray_config "unlock" "$user"
+                unlocked_user="$user"
+                send-unban-notif
+                unlocked_count=$((unlocked_count + 1))
+            else
+                echo "$line" >> "$temp_lock_file"
+            fi
+        else
+            echo "$line" >> "$temp_lock_file"
+        fi
+    done < "$LOCK_FILE"
+
+    mv "$temp_lock_file" "$LOCK_FILE"
+
+    if [[ "$unlocked_count" -gt 0 ]]; then
+        reload_services
+        echo "Unlocked ${unlocked_count} shadowsocks user(s)."
+    fi
+}
+
+function memulai_pengecekan() {
+    clear
+    > /tmp/other.txt
+
+    unlock_expired_users
+
+    search_pattern=$(for i in $(seq 0 $TIME_WINDOW_MINUTES); do date -d "$i minutes ago" +'%Y/%m/%d %H:%M'; done | tr '\n' '|' | sed 's/|$//')
+    grep -E "($search_pattern)" "$FULL_LOG_FILE" > "$FILTERED_LOG_FILE"
+
+    mapfile -t data < <(grep '#@&' /etc/xray/config.json 2>/dev/null | awk '{print $2}' | sort -u)
+    now=$(date +%s)
+
+    for user in "${data[@]}"; do
+        [[ -z "$user" ]] && continue
+
+        mapfile -t unique_ips < <(grep "email: $user" "$FILTERED_LOG_FILE" | awk '{print $3}' | cut -d: -f1 | sort -u)
+
+        live_ip_count=0
+
+        for ip in "${unique_ips[@]}"; do
+            case "$ip" in
+                127.0.0.1|10.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|192.168.*) continue ;;
+            esac
+
+            last_line=$(grep "$ip" "$FILTERED_LOG_FILE" | grep "email: $user" | tail -n 1)
+            [[ -z "$last_line" ]] && continue
+
+            timestamp_str=$(echo "$last_line" | awk '{print $1, $2}')
+            last_seen_timestamp=$(date -d "$timestamp_str" +%s 2>/dev/null || echo 0)
+
+            if [[ "$last_seen_timestamp" -ne 0 ]]; then
+                time_diff=$((now - last_seen_timestamp))
+                if [[ "$time_diff" -le "$LIVENESS_THRESHOLD_SECONDS" ]]; then
+                    ((live_ip_count++))
+                fi
+            fi
+        done
+
+        if [[ "$live_ip_count" -gt 0 ]]; then
+            raw_limit_ip=$(cat /etc/limit/shadowsocks/ip/"$user" 2>/dev/null || echo 0)
+            limit_ip=$(echo "$raw_limit_ip" | grep -o '[0-9]\+')
+
+            login_count=$live_ip_count
+
+            echo -e "User          : $user"
+            echo -e "Limit Login   : ${limit_ip} IP"
+            echo -e "Active IP     : $login_count IP"
+
+            if [[ "$login_count" -gt "$limit_ip" ]]; then
+                send-ip
+                lock_user "$user"
+                continue
+            fi
+        fi
+    done
+    
+    rm -f /tmp/other.txt "$FILTERED_LOG_FILE"
+    echo -n > /var/log/xray/access.log
+    sleep 2
+}
+
+memulai_pengecekan
