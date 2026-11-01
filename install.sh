@@ -379,7 +379,7 @@ memasang_notifikasi_bot() {
 <b>Automatic Notification From Installer Client...</b>
 "
   
-  local INLINE_KEYBOARD='{"inline_keyboard":[[{"text":"Telegram","url":"https://t.me/zenviora_id"},{"text":"Contact","url":"https://wa.me/6285888801241"}]]}'
+  local INLINE_KEYBOARD='{"inline_keyboard":[[{"text":"Telegram","url":"https://t.me/JesVpnt"},{"text":"Contact","url":"https://wa.me/6285888801241"}]]}'
   
   curl -s --max-time "$TIME" -d "chat_id=$CHATID&disable_web_page_preview=1&text=$TEXT&parse_mode=html&reply_markup=$INLINE_KEYBOARD" "$URL" >/dev/null
 }
@@ -607,36 +607,19 @@ print_success "SSHD"
 function memasang_vnstat(){
 clear
 print_install "Memasang Vnstat"
-export DEBIAN_FRONTEND=noninteractive
-# FIX MENTOK: tunggu apt/dpkg lock (mis. unattended-upgrades saat VPS baru boot) maksimal 3 menit
-apt-get -o DPkg::Lock::Timeout=180 -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -y install vnstat > /dev/null 2>&1
-apt-get -o DPkg::Lock::Timeout=180 -y install libsqlite3-dev > /dev/null 2>&1
-# FIX MENTOK: compile dari source HANYA jika binary vnstat belum tersedia dari repo.
-# wget diberi --timeout/--tries + mirror fallback GitHub agar tidak menggantung di humdi.net.
-if ! command -v vnstat > /dev/null 2>&1; then
-  wget -q --timeout=20 --tries=2 https://humdi.net/vnstat/vnstat-2.6.tar.gz -O /root/vnstat-2.6.tar.gz
-  if ! [ -s /root/vnstat-2.6.tar.gz ]; then
-    wget -q --timeout=20 --tries=2 https://github.com/vergoh/vnstat/releases/download/v2.6/vnstat-2.6.tar.gz -O /root/vnstat-2.6.tar.gz
-  fi
-  if [ -s /root/vnstat-2.6.tar.gz ]; then
-    tar zxf /root/vnstat-2.6.tar.gz -C /root
-    cd /root/vnstat-2.6 || cd /root
-    ./configure --prefix=/usr --sysconfdir=/etc > /dev/null 2>&1 && make -j"$(nproc)" > /dev/null 2>&1 && make install > /dev/null 2>&1
-    cd /root
-  fi
-fi
-rm -f /root/vnstat-2.6.tar.gz > /dev/null 2>&1
-rm -rf /root/vnstat-2.6 > /dev/null 2>&1
-# FIX BUG: $NET lama tidak pernah didefinisikan sehingga interface kosong.
-# Gunakan interface default route sebagai nilai aman.
-NET=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')
-[ -z "$NET" ] && NET="eth0"
-if [ -f /etc/vnstat.conf ]; then
-  sed -i "s/^Interface .*/Interface \"${NET}\"/g" /etc/vnstat.conf
-fi
-[ -d /var/lib/vnstat ] && chown vnstat:vnstat /var/lib/vnstat -R 2> /dev/null
-systemctl enable vnstat > /dev/null 2>&1
-systemctl restart vnstat > /dev/null 2>&1
+apt -y install vnstat > /dev/null 2>&1
+apt -y install libsqlite3-dev > /dev/null 2>&1
+wget -q https://humdi.net/vnstat/vnstat-2.6.tar.gz
+tar zxvf vnstat-2.6.tar.gz
+cd vnstat-2.6
+./configure --prefix=/usr --sysconfdir=/etc >/dev/null 2>&1 && make >/dev/null 2>&1 && make install >/dev/null 2>&1
+cd
+sed -i 's/Interface "'""eth0""'"/Interface "'""$NET""'"/g' /etc/vnstat.conf
+chown vnstat:vnstat /var/lib/vnstat -R
+systemctl enable vnstat
+/etc/init.d/vnstat restart
+rm -f /root/vnstat-2.6.tar.gz >/dev/null 2>&1
+rm -rf /root/vnstat-2.6 >/dev/null 2>&1
 clear
 print_success "Vnstat"
 }
